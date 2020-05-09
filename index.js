@@ -1,22 +1,53 @@
-let previousX;
-let previousY;
+const sender = Math.random().toString(36).substr(2, 9);
+const API = "http://localhost:7071/api";
 
+let lastPoint = { x: undefined, y: undefined };
 let canvas = undefined;
 let canvasContext = undefined;
 let drawing = false;
+let unsentStrokes = [];
+let hubConnection;
 
 const onLoaded = () => {
-    console.log("loaded");
+    setupCanvas();
+    setupHub();
+}
 
+const setupHub = () => {
+    hubConnection = new signalR.HubConnectionBuilder()
+        .withUrl(API)
+        .configureLogging(signalR.LogLevel.Information)
+        .build();
+
+    hubConnection.start();
+
+    hubConnection.on('newStrokes', message => {
+        if (message.sender === sender) {
+            return;
+        }
+
+        startDrawing();
+        message.strokes.map(stroke => draw(stroke.start, stroke.end));
+        stopDrawing();
+    });
+
+}
+
+const setupCanvas = () => {
     canvas = document.getElementById("canvas");
     canvasContext = canvas.getContext("2d");
 
-    canvas.addEventListener("mousedown", () => {
-        drawing = true;
-    }, false);
+    canvas.addEventListener("mousedown", ev => startDrawing(ev), false);
 
     canvas.addEventListener("mousemove", ev => {
-        draw(ev);
+        if (drawing === false) {
+            return;
+        }
+
+        const end = { x: ev.clientX - canvas.offsetLeft, y: ev.clientY - canvas.offsetTop };
+        draw(lastPoint, end);
+        unsentStrokes.push({ start: lastPoint, end });
+        lastPoint = end;
     }, false);
 
     canvas.addEventListener("mouseup", () => {
@@ -25,29 +56,40 @@ const onLoaded = () => {
 
     canvas.addEventListener("mouseleave", () => {
         stopDrawing();
-    })
+    });
+}
+
+const startDrawing = (ev) => {
+    if (ev) {
+        lastPoint.x = ev.clientX - canvas.offsetLeft;
+        lastPoint.y = ev.clientY - canvas.offsetTop;
+    }
+    drawing = true;
 }
 
 const stopDrawing = () => {
     drawing = false;
-    previousY = previousX = undefined;
+    lastPoint.x = lastPoint.y = undefined;
 }
 
-const draw = (ev) => {
-    if (!drawing) {
-        return;
-    }
-
-    const x = ev.clientX - canvas.offsetLeft;
-    const y = ev.clientY - canvas.offsetTop;
-
+const draw = (start, end) => {
     canvasContext.beginPath();
-    canvasContext.lineJoin = "round";
-
-    canvasContext.moveTo(previousX, previousY);
-    canvasContext.lineTo(x, y)
-    canvasContext.closePath();
+    canvasContext.moveTo(start.x, start.y);
+    canvasContext.lineTo(end.x, end.y)
     canvasContext.stroke();
-    previousX = x;
-    previousY = y;
 }
+
+const sendCoordinates = strokes => {
+    const requestInfo = {
+        body: JSON.stringify({ sender, strokes }),
+        method: "POST"
+    };
+    fetch(`${API}/CanvasHub`, requestInfo);
+}
+
+setInterval(() => {
+    if (unsentStrokes.length) {
+        sendCoordinates(unsentStrokes);
+        unsentStrokes = [];
+    }
+}, 250);
